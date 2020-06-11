@@ -348,6 +348,7 @@ func TestRejoin2B(t *testing.T) {
 	// leader network failure
 	leader1 := cfg.checkOneLeader()
 	cfg.disconnect(leader1)
+	DPrintf("First leader down")
 
 	// make old leader try to agree on some entries
 	cfg.rafts[leader1].Start(102)
@@ -360,9 +361,11 @@ func TestRejoin2B(t *testing.T) {
 	// new leader network failure
 	leader2 := cfg.checkOneLeader()
 	cfg.disconnect(leader2)
+	DPrintf("Second leader down")
 
 	// old leader connected again
 	cfg.connect(leader1)
+	DPrintf("First leader back")
 
 	cfg.one(104, 2, true)
 
@@ -442,6 +445,92 @@ func TestBackup2B(t *testing.T) {
 		cfg.connect(i)
 	}
 	cfg.one(rand.Int(), servers, true)
+
+	cfg.end()
+}
+
+func TestBackup2B2(t *testing.T) {
+	cnt := 0
+
+	servers := 5
+	cfg := make_config(t, servers, false)
+	defer cfg.cleanup()
+
+	cfg.begin("Test (2B): leader backs up quickly over incorrect follower logs")
+
+	// 0
+	cfg.one(cnt, servers, true)
+	cnt++
+
+	// put leader and one follower in a partition
+	leader1 := cfg.checkOneLeader()
+	cfg.disconnect((leader1 + 2) % servers)
+	cfg.disconnect((leader1 + 3) % servers)
+	cfg.disconnect((leader1 + 4) % servers)
+
+	// submit lots of commands that won't commit
+	for i := 0; i < 50; i++ {
+		//1 - 50
+		cfg.rafts[leader1].Start(cnt)
+		cnt++
+	}
+
+	time.Sleep(RaftElectionTimeout / 2)
+
+	cfg.disconnect((leader1 + 0) % servers)
+	cfg.disconnect((leader1 + 1) % servers)
+
+	// allow other partition to recover
+	cfg.connect((leader1 + 2) % servers)
+	cfg.connect((leader1 + 3) % servers)
+	cfg.connect((leader1 + 4) % servers)
+
+	// lots of successful commands to new group.
+	for i := 0; i < 50; i++ {
+		// 51 - 100
+		cfg.one(cnt, 3, true)
+		cnt++
+	}
+
+	// now another partitioned leader and one follower
+	leader2 := cfg.checkOneLeader()
+	other := (leader1 + 2) % servers
+	if leader2 == other {
+		other = (leader2 + 1) % servers
+	}
+	cfg.disconnect(other)
+
+	// lots more commands that won't commit
+	for i := 0; i < 50; i++ {
+		// 101 - 150
+		cfg.rafts[leader2].Start(cnt)
+		cnt++
+	}
+
+	time.Sleep(RaftElectionTimeout / 2)
+
+	// bring original leader back to life,
+	for i := 0; i < servers; i++ {
+		cfg.disconnect(i)
+	}
+	cfg.connect((leader1 + 0) % servers)
+	cfg.connect((leader1 + 1) % servers)
+	cfg.connect(other)
+
+	// lots of successful commands to new group.
+	for i := 0; i < 50; i++ {
+		// 151 - 200
+		cfg.one(cnt, 3, true)
+		cnt++
+	}
+
+	// now everyone
+	for i := 0; i < servers; i++ {
+		cfg.connect(i)
+	}
+	// 201
+	cfg.one(cnt, servers, true)
+	cnt++
 
 	cfg.end()
 }

@@ -237,7 +237,7 @@ func (cfg *config) cleanup() {
 
 // attach server i to the net.
 func (cfg *config) connect(i int) {
-	// fmt.Printf("connect(%d)\n", i)
+	DPrintf("connect(%d)\n", i)
 
 	cfg.connected[i] = true
 
@@ -260,7 +260,7 @@ func (cfg *config) connect(i int) {
 
 // detach server i from the net.
 func (cfg *config) disconnect(i int) {
-	// fmt.Printf("disconnect(%d)\n", i)
+	DPrintf("disconnect(%d)\n", i)
 
 	cfg.connected[i] = false
 
@@ -375,8 +375,8 @@ func (cfg *config) nCommitted(index int) (int, interface{}) {
 		cfg.mu.Lock()
 		cmd1, ok := cfg.logs[i][index]
 		cfg.mu.Unlock()
-
 		if ok {
+
 			if count > 0 && cmd != cmd1 {
 				cfg.t.Fatalf("committed values do not match: index %v, %v, %v\n",
 					index, cmd, cmd1)
