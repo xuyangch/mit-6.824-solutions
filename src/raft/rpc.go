@@ -61,6 +61,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	//defer rf.persist()
 	DPrintf("%v (%v) receive RequestVote request from %v, get lock, args is %+v, log is: %+v", rf.me, rf.state, args.CandidateId, args, rf.log)
 	if args.Term > rf.currentTerm {
 		rf.convertToFollower(args.Term)
@@ -74,6 +75,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		// if grand vote, reset timer
 		if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) && rf.isCandidateUpToDate(args.LastLogTerm, args.LastLogIndex) {
 			rf.votedFor = args.CandidateId
+			rf.persist()
 			reply.VoteGranted = true
 			rf.resetTimerChan <- 1
 		}
@@ -85,6 +87,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	//DPrintf("%v (%v) Received AppendEntries from %v, trying to get lock", rf.me, rf.state, args.LeaderId)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	//defer rf.persist()
 	DPrintf("%v (%v) Received AppendEntries from %v, get lock", rf.me, rf.state, args.LeaderId)
 	DPrintf("%v (%v) args.Term: %v, rf.currentTerm: %v, args: %+v", rf.me, rf.state, args.Term, rf.currentTerm, args)
 	DPrintf("%v (%v Term: %v) has log (size: %v) %+v", rf.me, rf.state, rf.currentTerm, len(rf.log), rf.log)
@@ -127,10 +130,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 
 		// Append any new entries not already in the log
+		modified := false
 		for eI := range args.Entries {
 			localI := args.PrevLogIndex + eI + 1
 			if localI >= len(rf.log) {
 				rf.log = append(rf.log, args.Entries[eI])
+				modified = true
 			} else {
 				rf.log[localI] = args.Entries[eI]
 			}
@@ -148,6 +153,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				Command:      rf.log[i].Command,
 				CommandIndex: i,
 			}
+		}
+		if modified {
+			rf.persist()
 		}
 	}
 }
