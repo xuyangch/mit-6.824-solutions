@@ -34,8 +34,9 @@ const (
 	electionTimeOutMin     = 1000 * time.Millisecond
 	heartBeatLoopItv       = 100 * time.Millisecond
 	checkLastLogIdxLoopItv = 10 * time.Millisecond
-	appendEntriesRetryItv  = 10 * time.Millisecond
 	updateCommitIdxLoopItv = 10 * time.Millisecond
+	updateLastAppliedItv   = 10 * time.Millisecond
+	//appendEntriesRetryItv  = 50 * time.Millisecond
 
 	followerState  State = "Follower"
 	candidateState State = "Candidate"
@@ -67,6 +68,7 @@ type Raft struct {
 	log         []LogEntry
 	// volatile state for all
 	commitIndex int
+	lastApplied int
 	// volatile state for leaders
 	nextIndex  []int
 	matchIndex []int
@@ -229,9 +231,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		votedFor:       -1,
 		log:            make([]LogEntry, 1),
 		commitIndex:    0,
+		lastApplied:    0,
 		nextIndex:      make([]int, len(peers)),
 		matchIndex:     make([]int, len(peers)),
-		resetTimerChan: make(chan int, 100),
+		resetTimerChan: make(chan int, 10000),
 		state:          followerState,
 		applyCh:        applyCh,
 	}
@@ -250,6 +253,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go rf.checkLastLogIdxWithFollowerLoop()
 	// kick off updating commit index
 	go rf.updateCommitIdxLoop()
+	// kick off updating last applied index
+	go rf.updateLastAppliedLoop()
 
 	return rf
 }
@@ -322,8 +327,8 @@ func (rf *Raft) checkLastLogIdxWithFollowerLoop() {
 			time.Sleep(checkLastLogIdxLoopItv)
 			continue
 		}
-		DPrintf("%v (%v, Term: %v) has log %+v", rf.me, rf.state, rf.currentTerm, rf.log)
-		DPrintf("%v (%v) start checking last log index with followers", rf.me, rf.state)
+		DPrintf("%v (%v, Term: %v) has log (size: %v) %+v", rf.me, rf.state, rf.currentTerm, len(rf.log), rf.log)
+		DPrintf("%v (%v) start checking last log index with followers, rf.nextIndex is: %v", rf.me, rf.state, rf.nextIndex)
 		for i := range rf.peers {
 			idx := i
 			if i == rf.me {
@@ -381,13 +386,15 @@ func (rf *Raft) checkLastLogIdxWithFollowerLoop() {
 						//copy(args.Entries, rf.log[args.PrevLogIndex+1:])
 						return
 						//time.Sleep(appendEntriesRetryItv)
-					}
+					} /* else {
+						break
+					}*/
 					//}
 					DPrintf("%v (%v) successfully send non-heartbeat AppendEntries RPC to %v, args: %+v", rf.me, rf.state, idx, args)
 					// AppendEntries RPC succeeds
 					rf.nextIndex[idx] = max(args.PrevLogIndex+len(args.Entries)+1, rf.nextIndex[idx])
 					rf.matchIndex[idx] = rf.nextIndex[idx] - 1
-					DPrintf("%v (%v) append non-heartbeat AppendEntries Success, rf.nextIndex[idx] = %v", rf.me, rf.state, rf.nextIndex[idx])
+					DPrintf("%v (%v) append non-heartbeat AppendEntries Success, idx: %v, rf.nextIndex[idx] = %v", rf.me, rf.state, idx, rf.nextIndex[idx])
 				}()
 			}
 		}
@@ -417,15 +424,7 @@ func (rf *Raft) updateCommitIdxLoop() {
 					}
 				}
 				if cnt > len(rf.peers)/2 {
-					DPrintf("%v (%v) sending to applyCh, cmd: %v, cmdIdx: %v", rf.me, rf.state, rf.log[newCommitIdx].Command, newCommitIdx)
-					for t := rf.commitIndex + 1; t <= newCommitIdx; t++ {
-						rf.applyCh <- ApplyMsg{
-							CommandValid: true,
-							Command:      rf.log[t].Command,
-							CommandIndex: t,
-						}
-					}
-
+					DPrintf("%v (%v) update newCommitIdx, cmd: %v, newCommitIdx: %v", rf.me, rf.state, rf.log[newCommitIdx].Command, newCommitIdx)
 					rf.commitIndex = newCommitIdx
 				}
 				newCommitIdx++
@@ -434,6 +433,31 @@ func (rf *Raft) updateCommitIdxLoop() {
 		rf.mu.Unlock()
 		time.Sleep(updateCommitIdxLoopItv)
 	}
+}
+
+func (rf *Raft) updateLastAppliedLoop() {
+	for {
+		rf.mu.Lock()
+		if rf.killed() {
+			rf.mu.Unlock()
+			return
+		}
+		for rf.lastApplied < rf.commitIndex {
+			rf.lastApplied += 1
+			applyMsg := ApplyMsg{
+				CommandValid: true,
+				Command:      rf.log[rf.lastApplied].Command,
+				CommandIndex: rf.lastApplied,
+				CommandTerm:  rf.log[rf.lastApplied].Term,
+			}
+			rf.mu.Unlock()
+			rf.applyCh <- applyMsg
+			rf.mu.Lock()
+		}
+		rf.mu.Unlock()
+		time.Sleep(updateLastAppliedItv)
+	}
+
 }
 
 func (rf *Raft) startElection() {
@@ -534,9 +558,22 @@ func (rf *Raft) sendHeartBeats() {
 			if reply.Term > rf.currentTerm {
 				DPrintf("%v (%v) get AppendEntry reply with currentTerm lagging behind!", rf.me, rf.state)
 				rf.convertToFollower(reply.Term)
-
 				return
 			}
+
+			if !reply.Success {
+				DPrintf("%v (%v) reply not success: sending heartbeat AppendEntries RPC to %v, prev args: %+v", rf.me, rf.state, idx, args)
+				// AppendEntries RPC fails
+				// reduce nextIndex, modify args
+				prevLogTerm := args.PrevLogTerm
+				for args.PrevLogIndex >= 1 && rf.log[args.PrevLogIndex].Term == prevLogTerm {
+					args.PrevLogIndex -= 1
+				}
+				args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
+				rf.nextIndex[idx] = args.PrevLogIndex + 1
+				return
+			}
+
 		}()
 	}
 }
@@ -550,6 +587,14 @@ func (rf *Raft) convertToFollower(newTerm int) {
 	rf.notLeaderCond.Signal()
 	DPrintf("%v (%v) Converted to Follower", rf.me, rf.state)
 	rf.persist()
+	rf.mu.Unlock()
+	rf.applyCh <- ApplyMsg{
+		CommandValid: true,
+		Command:      nil,
+		CommandIndex: 0,
+		CommandTerm:  newTerm,
+	}
+	rf.mu.Lock()
 }
 
 // check if candidate is at least up-to-date with rf

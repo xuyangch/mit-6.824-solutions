@@ -15,6 +15,7 @@ type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
+	CommandTerm  int
 }
 
 //
@@ -109,9 +110,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			DPrintf("%v (%v) reset timeout", rf.me, rf.state)
 			rf.resetTimerChan <- 1
 		}
-		if rf.state == candidateState {
+		/*if rf.state == candidateState {
 			rf.convertToFollower(args.Term)
-		}
+		}*/
 
 		reply.Success = true
 
@@ -142,17 +143,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 
 		// If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
-		prevCommitIdx := rf.commitIndex
 		if args.LeaderCommit > rf.commitIndex {
 			rf.commitIndex = min(args.LeaderCommit, args.PrevLogIndex+len(args.Entries))
-		}
-		for i := prevCommitIdx + 1; i <= rf.commitIndex; i++ {
-			DPrintf("%v (%v) sending to applyCh, cmd: %v, cmdIdx: %v", rf.me, rf.state, rf.log[i].Command, i)
-			rf.applyCh <- ApplyMsg{
-				CommandValid: true,
-				Command:      rf.log[i].Command,
-				CommandIndex: i,
-			}
 		}
 		if modified {
 			rf.persist()
